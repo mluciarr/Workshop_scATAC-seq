@@ -1,5 +1,5 @@
 ---
-title: "Workflow of scATAC-seq with multiome - Normalization and dimentionallity reduction"
+title: "Workflow of scATAC-seq with multiome - Normalization, Dimentionallity reduction and Harmony"
 author: 
 - name: "Maria Lucia Romero Rivero"
   email: MLROMEROR@clinic.cat
@@ -15,14 +15,7 @@ output:
 
 # Introduction
 
-Hi to everyone!
-In this notebook we are going to practice how to analise scATAC-se using multiome data (ATAC + GEX) by using the `Signac`( _Stuart et al._ , 2020) package. `Signac` ( _Stuart et al._ , 2020) in an extention of the very well-known `Seurat` package to analyse scATAC-seq data. We could say that is the successor to sequencing  techniques like ChIP-seq and RRBS-Seq (a type of bisulfite sequencing). 
-
-
-In this report we will present Signac by analyzing a data set composed of 3 multiome samples
-which have in average ---- cells from the human tonsil which belong to the Tonsil Atlas article (Massoni R.et al. 2022)
-To do this we must first download the following files:
-
+In this report we will see how we do the normalization, the batach effect correction of multiome data, for each methodology. 
 
 
 # Load packages
@@ -180,9 +173,6 @@ Our aim is to detect and exclude empty droplets or deth cells (lysed cells). Lys
 - (2) low library complexity (number of detected genes) a
 - (3) high fraction of mitochondrial expression (cytosolic mRNA leaks out of the cell). 
 
-<details>
-  <summary>**scRNA-seq**</summary>
-
 
 ### Normalization and linear dimensional reduction- 
 
@@ -236,7 +226,6 @@ rna.umap
 plot(rna.umap)
 ```
 
-</details>
 
 ```{r}
 atac.umap + rna.umap
@@ -249,7 +238,7 @@ out. A Seurat object is returned with corrected Harmony coordinates.
 
 ## scATAC
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 DefaultAssay(tonsil_merged) <- "ATAC"
 tonsil_merged <- RunHarmony(
   object = tonsil_merged,
@@ -284,8 +273,8 @@ Harm_peak<-DimPlot(
 
 # scRNA
 
-<details>
-  <summary>**harmony in RNA-seq**</summary>
+
+**harmony in RNA-seq**
   
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
@@ -317,7 +306,6 @@ Harm_rna<-DimPlot(
 ) + NoLegend() + ggtitle('RNA Harmony')
 ```
 
-</details>
 
 ## scATAC and RNAseq Harmony
 

@@ -16,16 +16,15 @@ output:
 # Introduction
 
 Hi to everyone!
-In this notebook we are going to practice how to analyse scATAC-se using multiome data (ATAC + GEX) by using the `Signac`(Stuart _et al._ , 2020) package. `Signac` (Stuart _et al._ , 2020) in an extension of the very well-known `Seurat` package to analyse scATAC-seq data. We could say that is the successor to sequencing  techniques like ChIP-seq and RRBS-Seq (a type of bisulfite sequencing). 
+In this notebook we are going to practice how to analyse scATAC-se using multiome data (ATAC + GEX) by using the `Signac`( _Stuart et al._ , 2020) package. `Signac` ( _Stuart et al._ , 2020) in an extension of the very well-known `Seurat` package to analyse scATAC-seq data. We could say that is the successor to sequencing  techniques like ChIP-seq and RRBS-Seq (a type of bisulfite sequencing). 
 
 
 In this report we will present Signac by analyzing a data set composed of 3 multiome samples
-which have in average ---- cells from the human tonsil which belong to the Tonsil Atlas article (Massoni R.et al. 2022)
-To do this we must first download the following files:
-
+which have in average 6377 cells from the human tonsil which belong to the Tonsil Atlas article (Massoni R.et al. 2022)
 
 
 # Instalation
+
 First we are going to install the Signac en R version 4.1
 
 ```{r eval=FALSE, include=FALSE}
@@ -75,6 +74,7 @@ set.seed(123)
 # Paths
 path_exp<-here::here("data/Experiment/1")
 path_to_save <- here::here("results/R_objects/")
+path_to_save_tables <- here::here("results/tables/")
 ```
 
 ## Histogram function
@@ -413,7 +413,7 @@ df<-lapply(quality_control, make.metadata.df)
 metadata_df <- map_df(df, ~as.data.frame(.x), .id="id")
 metadata_df<-metadata_df[order(metadata_df$id),]
 
-write.csv(metadata_df, "/results/tables/metadata_df_qc.csv", row.names=TRUE, quote=FALSE) 
+write.csv(metadata_df, paste0(path_to_save_tables,"metadata_df_qc.csv"), row.names=TRUE, quote=FALSE) 
 
 ```
 
