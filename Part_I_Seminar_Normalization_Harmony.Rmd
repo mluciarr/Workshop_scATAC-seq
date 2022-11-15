@@ -1,0 +1,351 @@
+---
+title: "Workflow of scATAC-seq with multiome - Normalization and dimentionallity reduction"
+author: 
+- name: "Maria Lucia Romero Rivero"
+  email: MLROMEROR@clinic.cat
+date: "`r Sys.Date()`"
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_captions: yes
+
+---
+
+# Introduction
+
+Hi to everyone!
+In this notebook we are going to practice how to analise scATAC-se using multiome data (ATAC + GEX) by using the `Signac`( _Stuart et al._ , 2020) package. `Signac` ( _Stuart et al._ , 2020) in an extention of the very well-known `Seurat` package to analyse scATAC-seq data. We could say that is the successor to sequencing  techniques like ChIP-seq and RRBS-Seq (a type of bisulfite sequencing). 
+
+
+In this report we will present Signac by analyzing a data set composed of 3 multiome samples
+which have in average ---- cells from the human tonsil which belong to the Tonsil Atlas article (Massoni R.et al. 2022)
+To do this we must first download the following files:
+
+
+
+# Load packages
+
+```{r setup, message=FALSE, warning=FALSE}
+library(Signac)
+library(Seurat)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(EnsDb.Hsapiens.v86)
+library(plyr)
+library(reshape2)
+library(data.table)
+library(GenomicRanges)
+library(harmony)
+library(hdf5r)
+library(stringr)
+library(ggpubr)
+library(RColorBrewer)
+library(magick)
+library(knitr) 
+library(biovizBase)
+library(patchwork)
+
+set.seed(123)
+```
+
+
+
+
+##  Directory path 
+
+```{r}
+# Paths
+path_to_data <- here::here("results/R_objects/")
+path_to_multiome_metadata <- here::here("data/tonsil_atlas_metadata_multiome.csv")
+
+path_to_save <- here::here("results/R_objects/")
+```
+
+
+## Gene annotation
+Extraction of gene annotations from EnsDb using hg38 as the reference assembly.
+
+```{r message=FALSE, warning=FALSE, comment=FALSE}
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "hg38"
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+tonsil_merged <- readRDS(paste0(path_to_data,"1.tonsil_filtered_merged_all.rds"))
+```
+
+
+# Add metada
+
+```{r}
+#become the first rowname as a column called "barcodes"
+tonsil_merged@meta.data <- tibble::rownames_to_column(tonsil_merged@meta.data, "lib_name_barcode")
+rn<-tonsil_merged@meta.data$lib_name_barcode
+m1<-str_extract(rn, "BCLL\\_[\\d|\\d{2}]+\\_\\w\\_\\d")
+tonsil_merged@meta.data$library_name<-m1
+
+#Add rownames to metadata
+rownames(tonsil_merged@meta.data)<-tonsil_merged@meta.data$lib_name_barcode
+```
+
+
+# Normalization and lineal and non-lineal dimentionallity reduction (LSI and UMAP)
+
+
+## scATAC
+
+
+For normalization, `Signac` performs a two-step technique called TF-IDF (Term Frequency - Inverse Document Frequency). This technique normalizes the cells in order to correct possible differences in sequencing depth and normalize the peaks, increasing the signal of rare peaks. Here, we will use the `RunTFIDF` function. 
+
+Since scATAC-seq has a low signal/noise ratio is more difficult to select the top feature (peaks) as we do in scRNA-seq (genes). That is why we use the `FindTopFeatures()` command to select the top x% of the peaks for dimensionality reduction, or remove peaks that are present in less than x cells. In this case we will use all the min.cutoff="q0" meaning that we will select the 100% of peaks.
+
+Finally, for dimensionality reduction, we perform a mathematical technique called SVD or Singular Value Decomposition on the matrix returned by TD-IDF (SVD is also performed to generate PCAs) and using only the peaks selected in the previous step. We call LSI or latent semantic indexing the technique that combines a TF-IDF step followed by an SVD step, and it was successfully used for the first time in scATAC-seq analysis by Cusanovich et al., 2015.
+
+
+
+ We exclude the first dimension as this is typically correlated with sequencing depth Cells cluster completely separately in ATAC without harmony; so run harmony after SVD
+
+RunSVD LSI
+```{r}
+DefaultAssay(tonsil_merged) <- "ATAC"
+tonsil_merged <- RunTFIDF(tonsil_merged)
+tonsil_merged <- FindTopFeatures(tonsil_merged, min.cutoff = "q0")
+tonsil_merged <- RunSVD(tonsil_merged)
+```
+
+
+
+### Plot the Depth correlation plot
+
+Compute the correlation between total counts and each reduced dimension component.
+
+
+LSI component is typically highly correlated with sequencing depth.  The first LSI component often captures sequencing depth (technical variation) rather  than biological variation. If this is the case, the component should be removed from 
+downstream analysis. We can assess the correlation between each LSI component and sequencing depth using the DepthCor() function:
+
+For scRNA-seq data we don't typically observe such a strong relationship between the first PC and sequencing depth, and so usually retain the first PC in downstream analyses.
+
+```{r fig.wide=TRUE}
+
+DepthCor(tonsil_merged)
+
+```
+
+Here we see there is a very strong correlation between the first LSI component and the totalnumber of counts for the cell, so we will perform downstream steps without this component.
+
+
+### UMAP representation
+
+* dimensional reduction key, specifies the string before the number for the dimension names. UMAP by default
+* reduction.name: Name to store dimensional reduction under in the Seurat object
+
+
+```{r fig.wide=TRUE}
+tonsil_merged <- RunUMAP(
+  tonsil_merged,
+  dims = 2:40,
+  reduction = "lsi",
+  reduction.name = "umap.atac",
+  reduction.key = "atacUMAP_"
+)
+atac.umap<-DimPlot(
+  tonsil_merged,
+  reduction = "umap.atac",
+  group.by = "library_name",
+  pt.size = 0.1
+) + ggtitle('scATAC UMAP') + NoLegend()
+
+atac.umap
+
+#split_by: library ,edad, genero
+```
+   
+   
+```{r}
+atac.umap 
+```
+
+
+## scRNA-seq
+
+Our aim is to detect and exclude empty droplets or deth cells (lysed cells). Lysed cells have 3 hallmarks:
+- (1) low library size (total UMI), 
+- (2) low library complexity (number of detected genes) a
+- (3) high fraction of mitochondrial expression (cytosolic mRNA leaks out of the cell). 
+
+<details>
+  <summary>**scRNA-seq**</summary>
+
+
+### Normalization and linear dimensional reduction- 
+
+### NormalizeData (Log Normalization)
+
+```{r message=FALSE, warning=FALSE}
+DefaultAssay(tonsil_merged) <- "RNA"
+tonsil_merged <- NormalizeData(
+  tonsil_merged,
+  normalization.method = "LogNormalize",
+  scale.factor = 1e4
+)
+
+tonsil_merged <- tonsil_merged %>%
+  FindVariableFeatures(nfeatures = 3000) %>%
+  ScaleData() %>% 
+  RunPCA() 
+```
+
+
+
+```{r}
+PCAPlot(tonsil_merged,
+  group.by = "library_name")
+
+```
+
+
+```{r}
+ElbowPlot(object = tonsil_merged)
+```
+
+
+### UMAP representation
+
+```{r}
+tonsil_merged <- RunUMAP(
+  tonsil_merged,
+  dims = 1:30,
+  reduction = "pca",
+  reduction.name = "umap.rna",
+  reduction.key = "rnaUMAP_"
+)
+rna.umap<-DimPlot(
+  tonsil_merged,
+  reduction = "umap.rna",
+  group.by = "library_name",
+  pt.size = 0.1) + NoLegend() + ggtitle('scRNA UMAP')
+
+rna.umap
+plot(rna.umap)
+```
+
+</details>
+
+```{r}
+atac.umap + rna.umap
+```
+
+# Harmony Integration (correct data by bath effect)
+
+Pass the Seurat object to the RunHarmony function and specify which variable to integrate 
+out. A Seurat object is returned with corrected Harmony coordinates.
+
+## scATAC
+
+```{r}
+DefaultAssay(tonsil_merged) <- "ATAC"
+tonsil_merged <- RunHarmony(
+  object = tonsil_merged,
+  reduction = "lsi",
+  dims = 2:40,
+  group.by.vars = "library_name",
+  assay.use = "ATAC",
+  project.dim = FALSE,
+  reduction.save = "harmony_atac"
+)
+```
+
+
+### UMAP representation
+
+```{r}
+tonsil_merged <- RunUMAP(
+  tonsil_merged,
+  dims = 2:40,
+  reduction = "harmony_atac",
+  reduction.name = "umap.atac",
+  reduction.key = "atacUMAP_"
+)
+
+Harm_peak<-DimPlot(
+  tonsil_merged,
+  reduction = "umap.atac",
+  group.by = "library_name",
+  pt.size = 0.1
+) + NoLegend() + ggtitle('Peak Harmony')
+```
+
+# scRNA
+
+<details>
+  <summary>**harmony in RNA-seq**</summary>
+  
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+DefaultAssay(tonsil_merged) <- "RNA"
+tonsil_merged <- RunHarmony(
+  object = tonsil_merged,
+  reduction = "pca",
+  dims = 1:30,
+  group.by.vars = "library_name",
+  assay.use = "RNA",
+  project.dim = FALSE,
+  reduction.save = "harmony_rna"
+)
+```
+
+```{r}
+tonsil_merged <- RunUMAP(
+  tonsil_merged,
+  dims = 2:40,
+  reduction = "harmony_rna",
+  reduction.name = "umap.rna",
+  reduction.key = "rnaUMAP_"
+)
+Harm_rna<-DimPlot(
+  tonsil_merged,
+  reduction = "umap.rna",
+  group.by = "library_name",
+  pt.size = 0.1
+) + NoLegend() + ggtitle('RNA Harmony')
+```
+
+</details>
+
+## scATAC and RNAseq Harmony
+
+```{r}
+Harm_peak+Harm_rna + plot_annotation(title = 'Harmony ATAC and RNA UMAP visualization')
+```
+
+
+
+# Save
+
+
+```{r}
+saveRDS(tonsil_merged,paste0(path_to_save,"2.tonsil_merged_harmony.rds"))
+```
+
+
+
+
+
+<details>
+  <summary>**Session Info**</summary>
+  
+```{r}
+sessionInfo()
+```
+
+</details>
+
+
+

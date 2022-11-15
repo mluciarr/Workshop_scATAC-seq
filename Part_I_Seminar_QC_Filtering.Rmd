@@ -1,0 +1,982 @@
+---
+title: "Workflow of scATAC-seq with multiome data"
+author: 
+- name: "Maria Lucia Romero Rivero"
+  email: MLROMEROR@clinic.cat
+date: "`r Sys.Date()`"
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_captions: yes
+
+---
+
+# Introduction
+
+Hi to everyone!
+In this notebook we are going to practice how to analyse scATAC-se using multiome data (ATAC + GEX) by using the `Signac`(Stuart _et al._ , 2020) package. `Signac` (Stuart _et al._ , 2020) in an extension of the very well-known `Seurat` package to analyse scATAC-seq data. We could say that is the successor to sequencing  techniques like ChIP-seq and RRBS-Seq (a type of bisulfite sequencing). 
+
+
+In this report we will present Signac by analyzing a data set composed of 3 multiome samples
+which have in average ---- cells from the human tonsil which belong to the Tonsil Atlas article (Massoni R.et al. 2022)
+To do this we must first download the following files:
+
+
+
+# Instalation
+First we are going to install the Signac en R version 4.1
+
+```{r eval=FALSE, include=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("BiocStyle")
+
+BiocManager::install("Rsamtools")
+install.packages("Signac")
+BiocManager::install("biovizBase")
+
+BiocManager::install(c('BSgenome.Hsapiens.UCSC.hg38', 'EnsDb.Hsapiens.v86'))
+
+```
+
+
+# Load packages
+
+```{r setup, message=FALSE, warning=FALSE}
+library(Signac)
+library(Seurat)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(EnsDb.Hsapiens.v86)
+library(plyr)
+library(reshape2)
+library(data.table)
+library(GenomicRanges)
+library(ensembldb)
+library(hdf5r)
+library(stringr)
+library(ggpubr)
+library(RColorBrewer)
+library(magick)
+library(knitr) 
+library(biovizBase)
+library(kableExtra)
+library(scater)
+set.seed(123)
+```
+
+
+##  Directory path 
+
+```{r path}
+# Paths
+path_exp<-here::here("data/Experiment/1")
+path_to_save <- here::here("results/R_objects/")
+```
+
+## Histogram function
+
+```{r}
+plot_histogram_qc <- function(df, x, x_lab) {
+  df %>%
+    ggplot(aes_string(x)) +
+    geom_histogram(bins = 100) +
+    labs(x = x_lab, y = "Number of Cells") +
+    theme_pubr()
+}
+```
+
+## Gene annotation
+
+Extraction of gene annotations from EnsDb using hg38 as the reference assembly.
+
+```{r comment=FALSE, message=FALSE, warning=FALSE}
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "hg38"
+```
+
+
+# Loading data and preprocessing 
+
+
+`Signac`and `Seurat` uses information from three related input files generate by the _CellRanger ARC_. If we were analysing multiome data, we should use both `Signac` to analyse scATAC-seq data and `Seurat` for scRNA-seq data but in this case we will jsut use `Seurat`package to create the Seurat Object of the GEX data. First, as we do in scRNA-seq, we will use the `Read10X()` function to read the output of the cellranger pipeline, returning: a unique molecular identified (UMI)/Peak count matrix and a fragment file. 
+
+* 1 *Count matrix in h5 format  Peak/UMI matrix*: This is analogous to the gene expression count matrix used to analyze single-cell RNA-seq. However, instead of genes, each row of the matrix represents a region of the genome (a peak), that is predicted to represent a region of open chromatin. Each value in the matrix represents the number of Tn5 integration sites for each single barcode (i.e. a cell) that map within each peak. You can find more detail on the 10X Website.
+
+* 2. ATAC Fragment file (atac_fragments.tsv.gz)
+* 3. ATAC Fragment file index (atac_fragments.tsv.gz.tbi)
+* *Fragment file* : it represents a full list of all unique fragments across all single cells. It is a substantially larger file, is slower to work with. It contains all fragments associated with each single cell, as opposed to only fragments that map to peaks. 
+Signac uses information from three related input files (created using CellRanger ARC):
+
+
+## Visualisation of the files
+
+```{r message=FALSE, warning=FALSE}
+# We load the file and we visualise the 6 first rows of the matrix  
+count_matrix <- Read10X_h5(paste0(path_exp,"/co7dzuup_xuczw9vc/filtered_feature_bc_matrix.h5"))
+```
+
+The `count_matrix` has 2 matrices:
+
+- *Peaks* for the ATAC data
+- *`Gene Expression`* for RNA data
+
+```{r}
+count_matrix$Peaks[c(1:5), c(1:5)]
+```
+
+Now, we can see that we have 115988 features where we have the *chromosome which is separated by a ":"* and the *start and end of the read position by a "-"* and 5572 cells. 
+
+```{r}
+count_matrix$Peaks
+```
+
+
+
+```{r}
+count_matrix$`Gene Expression`[c(1:5), c(1:5)]
+```
+
+
+# Create a Seurat Object 
+
+## Step by step
+
+Create a `ChromatinAssay``  object from a count matrix or normalized data matrix. The expected format of the input matrix is features x cells. A set of genomic ranges must be supplied along with the matrix, with the length of the ranges equal to the number of rows in the matrix. If a set of genomic ranges are not supplied, they will be extracted from the row names of the matrix.
+
+CreateChromatinAssay(
+  counts,
+  data,
+  min.cells = 0,
+  min.features = 0,
+  max.cells = NULL,
+  ranges = NULL,
+  motifs = NULL,
+  fragments = NULL,
+  genome = NULL,
+  annotation = NULL,
+  bias = NULL,
+  positionEnrichment = NULL,
+  sep = c("-", "-"),
+  validate.fragments = TRUE,
+  verbose = TRUE,
+  ...
+)
+
+
+`counts` Unnormalized data (raw counts) 
+
+`fragments` Path to a tabix-indexed *fragments file* for the data contained in the input matrix. If multiple fragment files are required, you can add additional Fragment object to the assay after it is created using the `CreateFragmentObject` and Fragments functions. Alternatively, a list of Fragment objects can be provided.
+
+`genome` A Seqinfo object containing basic information about the genome used. Alternatively, the name of a UCSC genome can be provided and the sequence information will be downloaded from UCSC.
+
+`annotation` A set of GRanges containing annotations for the genome used
+
+`sep`: Separators to use for strings encoding genomic coordinates. First element is used to separate the chromosome from the coordinates, second element is used to separate the start from end coordinate. Only used if ranges is NULL. In this case we will use *":"* which separates `chromosome:start position` and *"-"* which separates `start position-end position` as we see before in the peakc count matrix.
+
+
+
+```{r}
+#Fragment directory path
+fragpath <-"data/Experiment/1/co7dzuup_xuczw9vc/atac_fragments.tsv.gz"
+
+# we create a Seurat Object for GEX data (scRNA-seq)
+tonsil<-CreateSeuratObject(counts = count_matrix$`Gene Expression`, assay = "RNA")
+
+# We create a `ChromatinAssay` object for ATAC data (scATAC-seq), in order to create a Seurta object. 
+ # get gene annotations for hg38
+
+  annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+  seqlevelsStyle(annotation) <- "UCSC"
+  
+  
+tonsil[["ATAC"]] <- CreateChromatinAssay(
+  counts = count_matrix$Peaks,
+  sep = c(":", "-"),
+  genome="hg38",
+  fragments = fragpath,
+  annotation = annotation
+  )
+
+```
+
+If we look at the tonsil object:
+
+We have 2 assays: 
+RNA and ATAC
+In ATAC assay we have 115988 features and 5572 cells as we saw before. 
+
+```{r}
+tonsil@assays
+```
+
+In the metadata we have the number of Count and the number of feature for both methodologies for each barecode.  
+
+```{r}
+tonsil@meta.data
+```
+
+
+
+## Functions to intinerat through out the folders
+
+Here we are going to create a list of Seurat object of more than 1 tonsil samples. For that, I did some function to automatize the process. 
+
+## Create count matrix and a fragment path lists
+
+`make.matrix.path` function create a list of all the matrix directory path of each multiome sample data. 
+
+`make.fragpath` function creates a list of all the fragment directory path of each multiome sample data.
+
+```{r message=FALSE, warning=FALSE}
+#function that creates list of all matrix path of each sample (file h5)
+make.matrix.path <- function(path){
+  sample.path=list()
+  
+                sample.path <-list.files(path=path,
+                      pattern="h5", recursive = T, full.names = TRUE) 
+               
+                return(sample.path)
+        
+}
+
+#function creates a list of all fragment path of each sample (file  .tsv.gz)
+make.fragpath <- function(path){
+  sample.path<-list()
+  
+                sample.path <-list.files(path=path,
+                      pattern=".tsv.gz$", recursive = T, full.names = TRUE) 
+               
+                return(sample.path)
+        
+}
+
+``` 
+
+## Create a multiome Seurat Object list
+
+In this function called `make.SeuratObject.list` we will create a list of multiome of seurat object with chromatin assay data. 
+It has the 2 previous function nested. 
+
+`CreateChromatinAssay`:
+
+```{r}
+make.SeuratObject.list <- function(path){
+  sample.name <-list()
+  matrix.pathList <-list()
+  tonsil_list <-list()
+  fragpathList<-list()
+  
+  #create a list with all the matrix path of each sample
+  matrix.pathList<- make.matrix.path(path)
+  
+  #create a list of all the fragment path
+  fragpathList<- make.fragpath(path)
+  
+# save sample name
+  sample.name<- sub(".*Experiment/.*\\/(.*)\\/filtered_feature_bc_matrix.h5","\\1", matrix.pathList, perl = TRUE )
+  annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+  seqlevelsStyle(annotation) <- "UCSC"
+  genome(annotation) <- "hg38"
+                 
+  for (i in seq_along(matrix.pathList)){
+    
+                # Reading coutn matrix data 
+                  counts = Read10X_h5(filename=matrix.pathList[[i]])
+                  
+                  #List ot Fragment directory path
+                  fragpath <-fragpathList[[i]]
+                  
+                # we create a Seurat Object for GEX data (scRNA-seq)
+                  tonsil<-CreateSeuratObject(counts = counts$`Gene Expression`, assay = "RNA")
+                  
+                  # We create a `ChromatinAssay` object for ATAC data (scATAC-seq), in order to create a Seurta object. 
+                   # get gene annotations for hg38
+                  tonsil[["ATAC"]] <- CreateChromatinAssay(
+                    counts = counts$Peaks,
+                    sep = c(":", "-"),
+                    genome="hg38",
+                    fragments = fragpath,
+                    annotation = annotation
+                    )
+          
+                        
+      # list of all the Seurat Objects for each sample. 
+              
+                  tonsil_list[[sample.name[i]]] = assign(sample.name[[i]], tonsil, envir=.GlobalEnv)
+                                        } 
+  return(tonsil_list)
+                        }
+``` 
+
+
+## Read samples and assign them to a proper library name
+
+**Reading 2 tonsil samples**
+
+```{r message=FALSE, warning=FALSE}
+SeuratObject.list<-make.SeuratObject.list(path_exp)
+```
+
+```{r}
+SeuratObject.list
+```
+
+
+
+`list.name` is a list of id sample with each library name. 
+
+```{r}
+list.name<-list(
+co7dzuup_xuczw9vc="BCLL_9_T_1" ,
+ulx1v6sz_8a2nvf1c="BCLL_8_T_1" )
+
+list.name<-list.name[order(names(list.name))]
+```
+
+
+### Change sample names by library name
+
+```{r warning=FALSE}
+#Change sample ID by library name. 
+names(SeuratObject.list)<- c(list.name[[1]],list.name[[2]])
+```
+
+
+# Quality control 
+
+Quality control metrics are collected to determine library complexity, signal to 
+noise ratios, fragment length distribution per replicate (where available), and reproducibility.
+
+Here we will create a list called `quality_control` which has all the quality control of each 
+Seurat object of each samples. 
+
+Look at the distributions before deciding on cutoffs.
+
+## Quality Ccontrol (QC) Function
+
+This function will carry out the Nucleosome signal using `NucleosomeSignal`function, the TSS enrichment using `TSSEnrichment`function and also it will calculate the fraction of mitochondria and ribosomal RNA in each sample. 
+
+- Mitochondrial genes are useful indicators of cell state. High mitochondrial RNA fraction means that the cell are death, it has released the mitochondrial RNA.
+- We can define ribosomal proteins (their names begin with RPS or RPL), which often take substantial fraction of reads:
+
+```{r}
+QC <- function(SeuratObject.list){
+
+  
+  DefaultAssay(SeuratObject.list) <- "ATAC"
+  SeuratObject.list <- NucleosomeSignal(SeuratObject.list)
+  SeuratObject.list <- TSSEnrichment(SeuratObject.list, fast = FALSE)
+  SeuratObject.list$tss.level <- ifelse(SeuratObject.list$TSS.enrichment > 2, "High", "Low")
+    
+  DefaultAssay(SeuratObject.list)<-"RNA"
+  SeuratObject.list[["percent_mt"]] <- PercentageFeatureSet(SeuratObject.list, pattern = "^MT-")
+  SeuratObject.list[["percent_ribo"]] <- PercentageFeatureSet(SeuratObject.list, pattern = "^RP[SL]")
+
+return(SeuratObject.list)
+
+}
+```
+
+## Calculating QC metrics
+
+This quality control process will last around 496.867 sec (around 8-9 min), so you can go to get a coffe and streach your legs ;) 
+
+```{r message=FALSE, warning=FALSE}
+quality_control = lapply(SeuratObject.list, QC)
+
+```
+
+## Create a data frame of the metadata 
+
+After the QC process, we  use this function to make a data frame with only the metadata of each library.  
+
+```{r}
+md_df<- data.frame()
+make.metadata.df<- function (quality_control){
+  
+  md_df = rbind(md_df, quality_control@meta.data)
+  
+  return(md_df)
+}
+```
+
+We will create a data frame with only the metadata of each sample which will be called `metadata_df`.
+
+```{r}
+df<-lapply(quality_control, make.metadata.df)
+##create a data frame of all metadata 
+metadata_df <- map_df(df, ~as.data.frame(.x), .id="id")
+metadata_df<-metadata_df[order(metadata_df$id),]
+
+write.csv(metadata_df, "/results/tables/metadata_df_qc.csv", row.names=TRUE, quote=FALSE) 
+
+```
+
+## Table with the initial number of cell of each sample 
+
+```{r}
+num_cell<- as.data.frame(ddply(metadata_df, .(id), nrow))
+
+#change column names
+colnames(num_cell) <- c("library_name","initial_cells")
+```
+
+
+One important step is to know the exactly number of initial cells we have in each sample to know the percentage of cell we are going to keep after the filtering process. 
+
+```{r echo=FALSE}
+kbl(num_cell,caption = "Table of total number of initial barcoded cell of each library") %>%
+  kable_paper("striped", full_width = F) %>%
+  add_header_above(c(" ", "Total Number" = 1))
+```
+
+
+```{r}
+print(paste0( "There are ", sum(num_cell$initial_cells), " total number of cells"))
+```
+
+
+## Parameters
+
+After analysing the quality control (QC) characteristics of each sample, here we set up the quality control metrics in order to perform the filtering  of ATAC and RNA seq analysis.
+
+For ATAc we will 
+
+```{r}
+# Thresholds
+# ATAC-seq
+TSS_enrichment <- 2 
+nucleosome_signal_atac <- 2
+min_lib_size_atac<- 300
+max_lib_size_atac <- 200000
+
+
+#RNA-seq
+min_lib_size_rna<-470
+max_lib_size_rna<-40000
+min_ngenes_rna<-250
+max_ngenes_rna<-7000
+max_percent_mit <-20
+
+```
+
+
+## scATAC parameters
+
+### Library sizes
+
+The library size of ATAC-seq make reference to the number of reads of each fragment. 
+
+The red dashed lines represent the lower and the upper thresholds applied. 
+
+
+
+```{r fig.wide=TRUE}
+ls2<- ggviolin(metadata_df,
+              x = "id", fill = "steelblue", x.text.angle = 25,
+  y = "nCount_ATAC", title = "Library size (log10)" ,add="boxplot", add.params = list(fill = "white")) + 
+  scale_y_log10() +   
+  geom_hline(yintercept = c(min_lib_size_atac,max_lib_size_atac), linetype='dashed', col = 'red')+
+  labs(x = "Library name", y = "Number of counts ATAC-seq")
+
+ls2
+```
+
+
+```{r fig.wide=TRUE, message=FALSE, warning=FALSE}
+
+lib_size_hist_log <- metadata_df  %>%
+  ggplot(aes_string("nCount_ATAC")) +
+  geom_histogram(bins = 100) +
+  labs(x = "Library Size (log10)", y = "Number of Cells")+
+  theme_pubr()+
+  scale_x_log10() +
+  geom_vline(xintercept = c(min_lib_size_atac,max_lib_size_atac), linetype = "dashed", color = "red")
+
+lib_size_hist <- lib_size_hist_log +
+    scale_x_continuous(limits = c(0, 5000)) +
+    xlab("Library Size") +
+    theme_pubr()
+
+lib_size_hist_log
+lib_size_hist
+```
+
+
+### Number of detected peaks
+
+
+```{r Vlplot_peaks}
+ggviolin(
+metadata_df,
+  x="id",
+  y="nFeature_ATAC",
+  fill="steelblue",
+  add="boxplot", 
+  title = "Number of detected peaks",
+  ggtheme = theme_pubr(x.text.angle = 20),
+  add.params = list(fill = "white"))+
+  geom_hline(yintercept = 18000, linetype='dashed', col = 'red')+
+  labs(x = "Library name", y = "Number of detected Peaks")
+
+```
+
+We can easily see that the sample BCLL_2 which belong to the adult sample
+have a sifnifcant different of number of peak distribution. This difference could 
+low the general average of number of peaks. 
+
+- The median number of peaks is: `r median(metadata_df$nFeature_ATAC)`
+
+- The mean number of peaks is: `r round(mean(metadata_df$nFeature_ATAC),2)`
+
+**The median number of peaks per library**
+
+```{r}
+aggregate(nFeature_ATAC ~ id, data = metadata_df, median)
+
+```
+
+### Nucleosome Banding pattern
+
+Nucleosome banding pattern: The histogram of DNA fragment sizes (determined from the paired-end sequencing reads) should exhibit a strong nucleosome banding pattern corresponding to the length of DNA wrapped around a single nucleosome. We calculate this per single cell, and quantify the approximate ratio of Di-nucleosomal(DI) and mono-nucleosomal(MONO) to nucleosome-free(NFR) fragments.
+
+
+Single Cell ATAC read pairs produce detailed information about nucleosome packing and positioning. The fragment length distribution captures the nucleosome positioning periodicity.
+
+Histogram are divided by NFR, MonoNR and DiNR. 
+Dashed red lines represent the thresholds we set according our observation which is baseon the lowest parts of the histogram line. Back straight lines are threshold (147 and 294) base on bibliography, length of DNA wrapped around a single nucleosome. Ratio of fragments of each part made by both bibliography and our own threshold are represented in back and in red respectively. 
+
+The plot can be used to evaluate the quality of transposase reaction. We expect to find half or more of the of fragments within the nucleosome free regions (NFR) to confirm that
+our data is high quality and the transposase worked properly. 
+
+**Biobliography information about the minimum and maximum thresolds.**
+Nucleosome signal. The length of DNA wrapped around a single nucleosome has been experimentally determined as 147 bp. As Tn5 has a strong preference to integrate into nucleosome-free DNA, successful ATAC-seq experiments typically exhibit a depletion of DNA fragments with lengths that are multiples of 147 bp. We defined the nucleosome signal QC metric in Signac as the ratio of mononucleosomal (147–294 bp) to nucleosome-free (<147 bp) fragments sequenced for the cell, as a way of quantifying the expected depletion of nucleosome-length DNA fragments. 
+
+
+```{r NBP_plot, message=FALSE, warning=FALSE}
+
+nucleosome.bp <- function(seurat_object_df) {
+  
+  for (i in seq_along(seurat_object_df)){
+    
+  DefaultAssay(seurat_object_df[[i]]) <- "ATAC"
+  fh <- FragmentHistogram(object = seurat_object_df[[i]])
+  
+  
+  min.threshold<-147
+  max.threshold<-294
+ 
+  
+  NFR<- (length(which(fh$data$length < min.threshold))/ nrow(fh$data)) *100
+  MonoNR<- (length(which(fh$data$length > min.threshold &fh$data$length < max.threshold ))/ nrow(fh$data)) *100
+  DiNR<- (length(which(fh$data$length > max.threshold))/ nrow(fh$data)) *100
+ 
+
+  p <- ggplot(fh$data, aes(length)) + 
+    ggtitle(paste0("Nucleosome banding pattern of ",unique(names(seurat_object_df[i])))) +
+    geom_histogram(binwidth = 1, fill = "steelblue") +
+    geom_density(aes(y = ..count..), bw = 1, alpha = 0, col = "black", lwd = 1) + scale_x_continuous(limits = c(0, 550)) +
+    geom_vline(xintercept = c(min.threshold, max.threshold)) +
+    theme_minimal()+
+    geom_text(x = 80, y = 50, label = paste("NFR",round(NFR, 2)), size = 3) +
+    geom_text(x = 200, y = 50, label = paste("MONO",round(MonoNR, 2)), size = 3) +
+    geom_text(x = 350, y = 50, label = paste("DI",round(DiNR, 2)), size = 3)
+  
+  
+  print(p)
+}
+}
+
+t<-nucleosome.bp(quality_control)
+
+```
+
+
+Insert size distributions of the aggregated single cells from all eleven samples exhibited clear nucleosoma banding patterns.
+
+```{r fig.wide=TRUE}
+ns <- ggviolin(metadata_df,
+  x = "id", fill = "steelblue", x.text.angle = 0,
+  y = "nucleosome_signal",
+  title = "Nucleosome signal distribution(log10)",
+) + scale_y_log10() + geom_hline(yintercept = nucleosome_signal_atac, linetype='dashed', col = 'red')
+ns + labs(x = "Library name", y = "Nucleosome signal")
+```
+
+### TSS enrichment
+
+Transcriptional start site (TSS) enrichment score. The ENCODE project has defined an ATAC-seq targeting score based on the ratio of fragments centered at the TSS to fragments in TSS-flanking regions. Poor ATAC-seq experiments typically will have a low TSS enrichment score.
+
+TSS scores = the depth of TSS (each 100bp window within 1000 bp each side) / the depth of end flanks (100bp each end).
+
+TSSE score = max(mean(TSS score in each window))
+
+ To plot TSS enrichment profiles, we use the `TSSPlot()` function. TSS enrichment profiles show a clear peak in the center and a smaller shoulder peak at the downstream of the TSS (TSS + 220) could be the spacing region between two flanking nucleosomes. 
+Two vertical back dashed lines are given at the consensus TSS (hg38 genome) and at TSS + 220 bp. 
+
+
+- `TSSPlot()` function: we use `tss.level` column in the metada. 
+
+We can see clearly that the reads concentrate around the TSS, with a prominent peak a bit upstream
+
+```{r}
+tss.enrich.plot <- function(seurat_object_df) {
+  
+  for (i in seq_along(seurat_object_df)){
+    
+  DefaultAssay(seurat_object_df[[i]]) <- "ATAC"
+  fh <- FragmentHistogram(object = seurat_object_df[[i]])
+  
+    
+  p <- TSSPlot(seurat_object_df[[i]], group.by = 'tss.level') + 
+    ggtitle(paste0("TSS enrichment score of ",unique(names(seurat_object_df[i])))) +
+    theme_minimal() +
+    geom_vline(xintercept =c(0,220),linetype = "dashed", colour = "black") + 
+    xlab(bquote('Relative Position (bp form TSS')) +
+  ylab(expression("Relative enrichement")) 
+  
+  print(p)
+}
+}
+```
+
+
+
+
+```{r echo=TRUE, fig.wide=TRUE, message=FALSE, warning=FALSE}
+
+tss<-tss.enrich.plot(quality_control)
+
+```
+
+Now, we are going to show the distribution of the TSS scores for each samples.
+Red dashes line represents the cut off used to slip the data by low and high TSS score.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ls<- ggviolin(metadata_df,
+              x = "id", fill = "steelblue", x.text.angle = 25,y = "TSS.enrichment")  +
+  geom_hline(yintercept = 2, linetype='dashed', col = 'red')+ 
+  labs(x = "Library name", y = "TSS enrichment score")
+
+ls + scale_y_log10()+ ggtitle("TSS enrichment score (log10)")
+
+ls + ggtitle("TSS enrichment score")
+
+```
+
+
+
+# Filtering 
+
+## Filtering Function
+
+Once we set all the quality control metric we will use the `filtering.cell`function to filter out all the cell that are outliers for these QC metrics. This fucntion will return a seurat Object with only the cell that pass the metrics. 
+
+
+
+```{r}
+filtering.cell <- function(seurat_object.list){
+  
+  seurat_object <- subset(x = seurat_object.list,
+              subset = nCount_ATAC < max_lib_size_atac &
+              nCount_RNA < max_lib_size_rna &
+              nCount_ATAC > min_lib_size_atac &
+              nCount_RNA > min_lib_size_rna &
+              nFeature_RNA > min_ngenes_rna &
+              TSS.enrichment > TSS_enrichment &
+              nucleosome_signal < nucleosome_signal_atac &
+              percent_mt < max_percent_mit
+              )
+  
+  return(seurat_object)
+              
+}
+```
+
+## Filtering step
+
+Using the `lapply` we will perform the filtering step in all the samples saves in the `quality_control` list of Seurat Objects. The filtered new list of Seurat Object will be called `filtered.data`.
+
+
+```{r}
+filtered.data<- lapply(quality_control, filtering.cell)
+```
+
+
+```{r}
+# data frame of the filtered cells samples
+filtered.cell.df<-lapply(filtered.data, make.metadata.df)
+filtered.cell.df <- map_df(filtered.cell.df, ~as.data.frame(.x), .id="id")
+filtered.cell.df<-filtered.cell.df[order(filtered.cell.df$id),]
+
+
+```
+
+
+
+**Data frame of the number of cell with the metrics.**
+
+```{r}
+# dataframe with number of filtered cells
+num_fil_cell<- as.data.frame(ddply(filtered.cell.df, .(id), nrow))
+
+#change column names
+colnames(num_fil_cell) <- c("library_name","filt_cells")
+```
+
+**Merge the initial number of cell, the filtered cell  and the filtered out cells data frames**
+
+```{r}
+ini_filt_df<-merge(num_cell, num_fil_cell,by = "library_name") 
+```
+
+
+
+**Difference between initial number of cell and filtered number of cell**
+
+```{r}
+#create a column with the number of deleted cells which should be the same than the filtered out cell. 
+ini_filt_df$del_cells <- (ini_filt_df$initial_cells - ini_filt_df$filt_cells)
+```
+
+**Percentages of the deleted and QC pass-filter cells**
+
+```{r}
+ini_filt_df$pct_keep_cells <-  round(((ini_filt_df$filt_cells/ini_filt_df$initial_cells)*100),2)
+ini_filt_df$pct_del_cells <-  round((100-ini_filt_df$pct_keep_cells),2)
+
+```
+
+
+**Meaning of each column:**
+
+- `pct_del_cells`= percentage of deleted cells
+
+- `pct_keep_cells`= percentage of keep cells
+
+- `initial_cells`= total number of initial cells
+
+- `filt_cells`= total number of filtered cells
+
+- `del_cell`= total number of deleted cells
+
+
+```{r echo=FALSE}
+kbl(ini_filt_df,caption = "Table of total number of initial, filtered and filtered cell and the porcentaje of deleted and non-deleted cells of library") %>%
+  kable_paper("striped", full_width = F) %>%
+  column_spec(5, color = "white",
+              background = "steelblue")%>%
+  column_spec(4, color = "black",
+              background = "lightgrey")%>%
+  add_header_above(c(" ", "Total Number" = 3, "Percentage %" = 2))
+```
+
+Mean of percentage of cell that pass the QC metrics is: `r round(mean(ini_filt_df$pct_keep_cells),2)` %
+
+We are deleting on average `r 100-round(mean(ini_filt_df$pct_keep_cells),2)` % of bad quality cells. 
+
+# Merging Seurat Objects. 
+
+```{r}
+atac_default_assay <- function(seurat_object){
+  DefaultAssay(seurat_object) <- "ATAC"
+  return(seurat_object)
+}
+
+remove_atac_assay <- function(seurat_object){
+  DefaultAssay(seurat_object) <- "peaks"
+  seurat_object@assays[["ATAC"]] <- NULL
+  
+  seurat_object<-RenameAssays(object = seurat_object, peaks = 'ATAC')
+  return(seurat_object)
+}
+
+
+remove_peak_assay<- function(seurat_object){
+  DefaultAssay(seurat_object) <- "RNA"
+  seurat_object@assays[["peaks"]] <- NULL
+  return(seurat_object)
+}
+
+remove_rna_assay<- function(seurat_object){
+
+  seurat_object@assays[["RNA"]] <- NULL
+  
+  return(seurat_object)
+}
+```
+
+## Peak unify - ATAC
+
+
+If peak calling is performed individually in each experiment, they may end up with regions of peaks that do not overlap perfectly. We can merge regions of peaks from all datasets to create a common set of peaks, and re-quantify each experiment separately using the merged common set of peaks.
+We can use several different methods to create a common set of peaks. Here we will directly use the `UnifyPeaks` function from the `Signac` package to extract the coordinates of the peaks from the list of seurat objects and reduce or disjoin the peaks to create a single non-overlapping set of peaks.
+
+We will merge peaks from all the datasets to create a common peak set, and quantify this peak set in each experiment prior to merging the objects.
+
+
+```{r}
+# Create a unified set of peaks
+filtered_data_peak <- lapply(filtered.data, atac_default_assay)
+combined_peaks <- UnifyPeaks(object.list = filtered_data_peak, mode = "reduce") 
+
+
+#View the merged peaks set
+combined_peaks
+```
+
+```{r}
+# Keeping only standard chromosomes
+combined_peaks <- keepStandardChromosomes(combined_peaks, pruning.mode = 'coarse')
+peakwidths <- width(combined_peaks)
+
+p<-ggviolin(peakwidths,add = "boxplot",fill = "gray") + scale_y_log10() + 
+  geom_hline(yintercept = c(10,20000), linetype='dashed', col = 'black')
+p
+
+#Keeping only those peak between 10000 and 20 widths
+combined_peaks <- combined_peaks[peakwidths < 20000 & peakwidths > 10]
+combined_peaks
+
+```
+
+## Quantify peaks in each dataset
+
+After obtaining the merged public peaks set, we can use the FeatureMatrix function to re-quantify the counts for each data set based on the common peaks set, and create a new assay to store the counted data.
+
+
+**We don't filter cells like in the tutorial, because we use already filtered matrices.**
+
+The `peaks_quantification` function will re-quantify the counts for each data set by using `FeatureMatrix` function and it will create a new assay storing the Fragment object for each dataset.
+
+
+```{r }
+peaks_quantification <- function(seurat_filtered, peaks = combined_peaks){ 
+  
+  counts <- FeatureMatrix(
+    fragments = Fragments(seurat_filtered),
+    features = combined_peaks,
+    cells = colnames(seurat_filtered))  #Vector of cells to include in this case we include all the cell in the Seurat object
+  
+  # create a new chromatin assay in the Seurat object with the new  matrix of peaks 
+  seurat_filtered[["peaks"]] <- CreateChromatinAssay(
+    counts, 
+    genome = "hg38",
+    fragments = Fragments(seurat_filtered),
+    annotation = annotation)
+  
+  return(seurat_filtered)
+}
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+filtered_data_unified_peak <- lapply(filtered_data_peak, peaks_quantification)
+
+```
+
+
+## Split objects Function
+
+```{r}
+#split seurat objects, creating object_# for each library
+split_obj_function<- function(tonsil_filtered_RNA){
+  for (i in seq_along(tonsil_filtered_RNA)){
+                  object<-tonsil_filtered_RNA[[i]]
+                 print(assign(paste("object",i,sep='_'), object, envir=.GlobalEnv))
+  }
+}      
+```
+
+
+## Merging RNA data
+
+**Removing ATAC assay to reduce the size of the final Seurat object**
+
+```{r}
+filtered_data_unified_peak <- lapply(filtered_data_unified_peak, remove_atac_assay )
+```
+
+**Remove peak assays**
+
+```{r}
+filtered_data_unified_peak_rna <- lapply(filtered_data_unified_peak, remove_peak_assay )
+
+```
+
+Here we will split the Seurat Object list into 12 objects ("object_1","object_2","object_3", ..etc) in order to merge them all in a unique seurat object of scRNA-seq data called `merged_rna`
+
+```{r message=FALSE, warning=FALSE}
+split_obj_function(filtered_data_unified_peak_rna)
+
+#Merging seurat objects
+
+merged_rna <- merge(object_1, y = list(object_2), 
+                add.cell.ids = c(names(filtered_data_unified_peak_rna)))
+
+
+rm(list=ls(pattern="object_"))
+```
+
+
+## Merging ATAC
+
+**Removing RNA assay to reduce the size of the final Seurat object**
+
+```{r}
+tonsil_unified_peaks_ATAC<- lapply(filtered_data_unified_peak, remove_rna_assay)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+split_obj_function(tonsil_unified_peaks_ATAC)
+
+#Merging seurat objects of ATAC assay in this case it is called  "peaks" assay 
+
+merged_ATAC <- merge(object_1, y = list(object_2), 
+                add.cell.ids = c(names(tonsil_unified_peaks_ATAC)))
+rm(list=ls(pattern="object_"))
+```
+
+
+
+## Merge RNA and ATAC assays
+
+```{r}
+merged_rna@assays$peaks<- merged_ATAC@assays$peaks
+
+merged<-merged_rna
+```
+
+The `merged` object has 2 assay, RNA and ATAC assay in there assay 
+
+```{r}
+merged@assays
+```
+
+
+# Save
+
+```{r}
+saveRDS(merged,paste0(path_to_save,"1.tonsil_filtered_merged_all.rds"))
+```
+
+
+<details>
+  <summary>**Session Info**</summary>
+  
+```{r}
+sessionInfo()
+```
+
+</details>
+
+
+
