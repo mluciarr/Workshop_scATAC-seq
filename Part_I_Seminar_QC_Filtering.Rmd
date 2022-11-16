@@ -204,6 +204,8 @@ tonsil[["ATAC"]] <- CreateChromatinAssay(
 
 ```
 
+
+
 If we look at the tonsil object:
 
 We have 2 assays: 
@@ -219,7 +221,12 @@ In the metadata we have the number of Count and the number of feature for both m
 ```{r}
 tonsil@meta.data
 ```
+Here we will see the directory path where the fragment path is save. For that reason is important to keep the fragment files in the same direction. Otherwise you will need to change it.
+After you merge 2 or more samples you will find one fragmemt file directory for each sample.
 
+```{r}
+tonsil@assays[["ATAC"]]@fragments[[1]]@path
+```
 
 
 ## Functions to intinerat through out the folders
@@ -305,8 +312,7 @@ make.SeuratObject.list <- function(path){
                     )
           
                         
-      # list of all the Seurat Objects for each sample. 
-              
+                  # list of all the Seurat Objects for each sample. 
                   tonsil_list[[sample.name[i]]] = assign(sample.name[[i]], tonsil, envir=.GlobalEnv)
                                         } 
   return(tonsil_list)
