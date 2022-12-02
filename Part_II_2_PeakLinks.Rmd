@@ -1,0 +1,225 @@
+---
+title: "2.Seminar Part II - Peak-gene Linkages"
+author: 
+- name: "Maria Lucia Romero Rivero"
+  email: MLROMEROR@clinic.cat
+date: "`r Sys.Date()`"
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_captions: yes
+
+---
+
+
+# Introduction
+
+Hi to everyone!
+In this notebook we are going to practice how to perform the Peak-gene linkage analysis using B-cell of tonsil multiome dataset (ATAC + GEX).This analysis was developed in the `Signac`( _Stuart et al._ , 2020) package by 10x Genomics.
+
+
+In this report we will continue working with the previous Seurat object saved as `3.tonsil_bcelling.rds`in the results/R_object directory.  
+
+To do this we must first download the following files:
+
+
+
+<details>
+  <summary>**Load packages**</summary>
+  
+
+```{r eval=FALSE}
+BiocManager::install("Repitools")
+
+```
+
+
+```{r setup, message=FALSE, warning=FALSE}
+library(Signac)
+library(Seurat)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(EnsDb.Hsapiens.v86)
+library(plyr)
+library(reshape2)
+library(data.table)
+library(GenomicRanges)
+library(harmony)
+library(hdf5r)
+library(stringr)
+library(ggpubr)
+library(RColorBrewer)
+library(magick)
+library(knitr) 
+library(biovizBase)
+library(patchwork)
+library(Repitools)
+library(qlcMatrix)
+library(BSgenome.Hsapiens.UCSC.hg38)
+set.seed(123)
+```
+</details>
+
+  
+# Loading data
+ 
+## Directory path 
+
+```{r}
+# Paths
+path_to_data <- here::here("results/R_objects/")
+path_to_save <- here::here("results/R_objects/")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+tonsil_bcell <- readRDS(paste0(path_to_data,"3.tonsil_bcell.rds"))
+```
+
+# UMAP 
+
+```{r}
+ DimPlot(
+    tonsil_bcell,
+    group.by = "seurat_clusters_name",
+    reduction = "wnn.umap",
+    pt.size = 0.1, label = T
+  )
+```
+
+
+# Link peaks
+
+```{r eval=FALSE, include=FALSE}
+DefaultAssay(tonsil_bcell) <- "ATAC"
+
+# first compute the GC content for each peak
+tonsil_bcell <- RegionStats(tonsil_bcell, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+# link peaks to all genes
+tonsil_bcell <- LinkPeaks(
+  object = tonsil_bcell,
+  peak.assay = "ATAC",
+  expression.assay = "RNA"
+)
+```
+
+```{r eval=FALSE, include=FALSE}
+DefaultAssay(tonsil_bcell) <- "ATAC"
+
+# first compute the GC content for each peak
+tonsil_bcell <- RegionStats(tonsil_bcell, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+# link peaks to  BCL6 and PRDM1 genes at 2e+8 TSS 
+tonsil_bcell <- LinkPeaks(
+  object = tonsil_bcell,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  genes.use = c("BCL6","PRDM1"),
+  distance = 2e+8
+)
+```
+
+```{r}
+DefaultAssay(tonsil_bcell) <- "ATAC"
+
+# first compute the GC content for each peak
+tonsil_bcell <- RegionStats(tonsil_bcell, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+# link peaks to genes
+tonsil_bcell <- LinkPeaks(
+  object = tonsil_bcell,
+  peak.assay = "ATAC",
+  expression.assay = "RNA",
+  genes.use = c("BCL6","PRDM1"),
+  distance = 1e+9
+)
+
+
+```
+
+
+We are going to create a dataframe with all the links related to PRDM1 and BCL6 genes.
+
+```{r}
+df_LinkPeaks<-as.data.frame(Links(tonsil_bcell))
+head(df_LinkPeaks[df_LinkPeaks$gene=="BCL6",])
+```
+
+
+```{r}
+head(df_LinkPeaks[df_LinkPeaks$gene=="PRDM1",])
+```
+
+
+```{r}
+head(df_LinkPeaks)
+```
+
+
+
+```{r}
+idents.plot<-c("GCBC","NBC","MBC", "PC")
+
+DefaultAssay(tonsil_bcell) <- "ATAC"
+
+CoveragePlot(
+object = tonsil_bcell,
+region = "BCL6",
+features = "BCL6",
+expression.assay = "RNA",
+idents = idents.plot,
+extend.upstream = 5000000,
+extend.downstream = 10000000
+#tile = TRUE
+)
+
+```
+
+
+```{r}
+CoveragePlot(
+object = tonsil_bcell,
+region = "PRDM1",
+features = "PRDM1",
+expression.assay = "RNA",
+idents = idents.plot,
+extend.upstream = 10000000,
+extend.downstream = 10000000
+#tile = TRUE
+)
+
+```
+
+
+# Modality Weights
+
+```{r}
+rna.weight<- VlnPlot(tonsil_bcell, features = "RNA.weight", group.by = "seurat_clusters_name",pt.size = 0)
+atac.weight<- VlnPlot(tonsil_bcell, features ="ATAC.weight", group.by = "seurat_clusters_name",pt.size = 0)
+
+rna.weight + ggtitle("RNA modality weight")
+atac.weight+ ggtitle("ATAC modality weight")
+```
+
+
+
+# Save
+
+
+```{r}
+saveRDS(tonsil_bcell,paste0(path_to_save,"4.tonsil_bcell_linkpeaks.rds"))
+```
+
+<details>
+  <summary>**Session Info**</summary>
+  
+```{r}
+sessionInfo()
+```
+
+
+</details>

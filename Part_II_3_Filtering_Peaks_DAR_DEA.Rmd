@@ -1,0 +1,475 @@
+---
+title: "3.Filtering Links by DARs and DEG"
+author: 
+- name: "Maria Lucia Romero Rivero"
+  email: MLROMEROR@clinic.cat
+date: "`r Sys.Date()`"
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_captions: yes
+
+---
+
+
+# Introduction
+
+In this notebook we will perform the gene-peak links filtering by deferentially accessible regions (DARs) and, then, by the differentially expressed genes (DEGs). We  need to remember that we are only analyzing BCL6 and PRDM1 genes links as proof of concepts and to reduce the computational time. Also, you will see how the number or link significantly decrease and how they look at the coverage plot. 
+
+In this report we will continue working with the previous Seurat object saved as `4.tonsil_bcell_linkpeaks.rds`in the results/R_object directory.  
+
+
+<details>
+  <summary>**Load packages**</summary>
+  
+```{r eval=FALSE}
+BiocManager::install("Repitools")
+
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Signac)
+library(Seurat)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(EnsDb.Hsapiens.v86)
+library(plyr)
+library(reshape2)
+library(data.table)
+library(GenomicRanges)
+library(harmony)
+library(hdf5r)
+library(stringr)
+library(ggpubr)
+library(RColorBrewer)
+library(magick)
+library(knitr) 
+library(biovizBase)
+library(patchwork)
+library(Repitools)
+library(qlcMatrix)
+library(kableExtra)
+library(BSgenome.Hsapiens.UCSC.hg38)
+set.seed(123)
+```
+
+</details>
+
+# Loading data
+ 
+## Directory path 
+
+```{r}
+# Paths
+path_to_objects <- here::here("results/R_objects/")
+path_to_tables <- here::here("results/tables/")
+
+```
+
+## Load data
+
+```{r}
+tonsil_bcell <- readRDS(paste0(path_to_objects,"4.tonsil_bcell_linkpeaks.rds"))
+deg<- read_csv(paste0(path_to_tables,"tonsil_bcell_deg.csv"))
+dars<- read_csv(paste0(path_to_tables,"tonsil_bcell_dars.csv"))
+
+```
+
+# Joint UMAP
+
+```{r}
+Idents(tonsil_bcell)<-"annotation_level_1"
+DimPlot(tonsil_bcell,label = TRUE, reduction = "wnn.umap", pt.size = 0.5,cols = c("#a6cee3", "#1f78b4","#b2df8a", "#fb9a99","#e31a1c")) + ggtitle("Joint UMAP")+NoLegend()
+```
+
+# Link filtering by DARs
+
+First we will see how many DARs are in each main B-cell population. 
+
+```{r}
+dars_nbc<-dars[dars$cluster=="NBC",]
+dars_gcbc<-dars[dars$cluster=="GCBC",]
+dars_mbc<-dars[dars$cluster=="MBC",]
+dars_pc<-dars[dars$cluster=="PC",]
+df_dars_celltype<-data.frame(cell_type=c("NBC","GCBC","MBC","PC"), num_dars=c(nrow(dars_nbc),nrow(dars_gcbc),nrow(dars_mbc),nrow(dars_pc)))
+```
+
+```{r}
+df_dars_celltype
+```
+
+We can see that the GCBC and the PC are the one with more DARs that makes sense because GCBC undergo affinity maturation, multiply rapidly, and differentiate into memory B cells (MBC). The chromatin of NBC, since it has not been exposed to any antigen, is not differentiated for any specific function. MBC recovers the genome architecture of NBC after GC reaction. Therefore, MBC is more similar to NBC and is distinctly different from GCBC and PC. 
+
+
+## Split the gene column 
+
+The gene column actually corresponds to the DARs coordinates. So here we will split it into 3 columns in order to have one column for chromosome position, the start and the end coordinates of each peak. Doing so, then, we will be able to create a Granges. 
+
+```{r}
+coord_link_DARs<-str_split_fixed(dars$gene, "-", 3)
+colnames(coord_link_DARs)<-c("chrom","start","end")
+dars<-cbind(dars,coord_link_DARs)
+#write_csv(dars,path_to_save_DARs)
+```
+
+In this dinamyc table we can see the 3 new columns. 
+
+```{r}
+DT::datatable(head(dars))
+```
+```{r}
+#remove column ...1 because is the same than the "gene" column
+dars$...1<-NULL
+```
+
+
+**From dataframe to Granges**
+
+First we have the change the name of "genes" column by "peaks". and the "chrom" name as "seqnames" to match it with Links dataframe. 
+
+```{r}
+names(dars)[c(7,8)]
+```
+
+
+```{r}
+names(dars)[c(7,8)]<-c("peak","seqnames")
+```
+
+Now we will save the links in a data frame in order to join it with the dars dataframe. 
+
+```{r}
+#Joint links to DARs
+df_linkpeak<-as.data.frame(Links(tonsil_bcell))
+```
+
+```{r}
+kbl(head(df_linkpeak),caption = "Table of Link peaks of level 1 tonsil object") %>%
+  kable_paper("striped", full_width = F)
+```
+
+
+Here we are going to join both data frame by the `inner_join` function which will keep only the links that are overlapping with the DARs. 
+
+```{r}
+df_links_DARs<-inner_join(df_linkpeak,dars,by="peak")
+
+#change the "seqnames.x" "start.x"    "end.x"      "seqnames.y" "start.y"  by "seqnames","start","end","start.peak","end.peak"
+names(df_links_DARs)[c(1,2,3,18,19)]<-c("seqnames","start","end","start.peak","end.peak")
+```
+
+```{r}
+kbl(head(df_links_DARs),caption = "Table of gene-peak links filtered by DARs") %>%
+  kable_paper("striped", full_width = F)
+```
+
+```{r}
+# remove the seqnames.y column becuase its the same as the seqnames column
+df_links_DARs$seqnames.y<-NULL
+
+```
+
+
+
+*Dataframe of the links filteres by DARs*
+
+```{r}
+kbl(head(df_links_DARs),caption = "Table of gene-peak links filtered by DARs") %>%
+  kable_paper("striped", full_width = F)
+```
+
+
+```{r}
+#save the df link filtered by DARs
+write_csv(df_links_DARs,paste0(path_to_tables,"5.Links_filtered_by_DARs.csv"))
+```
+
+
+## Create new Seurat Object with Links filtered by DARs
+
+Since the Links data is in GRanges format we have to save the new set of link in this format. To do so, the `df_links_DARs` dataframe needs to become in a GRanges format using the `makeGRangesFromDataFrame` function. 
+To learn more about GRanges format you can check [this tutorial](https://bioconductor.org/packages/devel/bioc/vignettes/GenomicRanges/inst/doc/GenomicRangesIntroduction.html)
+
+```{r}
+tonsil_bcell_links_DARs<-tonsil_bcell
+Links(tonsil_bcell_links_DARs)<-makeGRangesFromDataFrame(df_links_DARs,
+                                                   keep.extra.columns=FALSE,
+                                                   ignore.strand=FALSE,
+                                                   seqinfo=NULL,
+                                                   seqnames.field=c("seqnames", "seqname","chromosome", 
+                                                                    "chrom","chr","chromosome_name","seqid"),
+                                                   start.field="start",
+                                                   end.field=c("end", "stop"),
+                                                   strand.field="strand",
+                                                   starts.in.df.are.0based=FALSE)
+
+values(Links(tonsil_bcell_links_DARs))<-DataFrame(score=df_links_DARs$score,
+                                                  gene=df_links_DARs$gene,
+                                                  cluster=df_links_DARs$cluster,
+                                                  peak=df_links_DARs$peak,
+                                                  zscore=df_links_DARs$zscore,
+                                                  pvalue=df_links_DARs$pvalue,
+                                                  p_val.dars=df_links_DARs$p_val,
+                                                  pct.1=df_links_DARs$pct.1,
+                                                  pct.2=df_links_DARs$pct.2, 
+                                                  avg_log2FC=df_links_DARs$avg_log2FC,
+                                                  start.peak=df_links_DARs$start.peak,
+                                                  end.peak=df_links_DARs$end.peak)
+
+```
+
+
+# Coverage plot
+
+*`coverage_extend{r}`is a function that create a coverageplot for a certain gene and region using different upstream and downstream extension region. *
+
+```{r}
+coverage_extend <- function(x,y,seuratobject){purrr::map(y, function(y) {
+  
+  p <- CoveragePlot(
+  object = seuratobject,
+  region = x,
+  features = x,
+  expression.assay = "RNA",
+  idents = idents.plot,
+  extend.upstream = y,
+  extend.downstream = y
+  #tile = TRUE
+  )
+  p & scale_fill_manual(values = cols_cluster)
+})}
+```
+
+```{r}
+ranges.show <- StringToGRanges("chr3-187721377-187745725")
+
+# set the colors will have  each chromatin accesibility  profile of each cell type. That match with the colors in the UMAP
+cols_cluster <- c("#a6cee3", "#1f78b4","#b2df8a", "#fb9a99")
+idents.plot <- c("GCBC", "NBC", "MBC", "PC")
+```
+
+## Genome-wide links 
+
+We will see the link at different level:
+-  Gene body level: 0 bp from  TSS
+- Promoter level: 2000 from TSS
+- Long genomic distances from gene body: 10000,1e+7 bp from TSS
+
+```{r}
+coverage_extend("BCL6",c(0,2000,10000,1e+7),tonsil_bcell)
+```
+
+```{r}
+coverage_extend("PRDM1",c(0,2000,10000,1e+7),tonsil_bcell)
+```
+
+## Links filtered by DARs
+
+```{r}
+coverage_extend("BCL6",c(0,2000,10000,1e+7),tonsil_bcell_links_DARs)
+```
+
+```{r}
+coverage_extend("PRDM1",c(0,2000,10000,100000,1e+6),tonsil_bcell_links_DARs)
+
+```
+
+
+# Filtering links by DEG
+ 
+
+Now, the already filtered Links by DARs are going to be filtered by DEG. 
+
+```{r}
+deg_nbc<-deg[deg$cluster=="NBC",]
+
+deg_gcbc<-deg[deg$cluster=="GCBC",]
+deg_mbc<-deg[deg$cluster=="MBC",]
+deg_pc<-deg[deg$cluster=="PC",]
+df_deg_celltype<-data.frame(cell_type=c("NBC","GCBC","MBC","PC"), num_deg=c(nrow(deg_nbc),nrow(deg_gcbc),nrow(deg_mbc),nrow(deg_pc)))
+```
+
+```{r}
+df_deg_celltype
+```
+
+
+```{r}
+kbl(head(deg),caption = "Table of DEG markers") %>%
+  kable_paper("striped", full_width = F)
+```
+
+```{r}
+#remove ..1 column becuase is the same than "gene" column
+deg$...1<-NULL
+```
+
+
+```{r}
+df_links_DARs_DEG<-inner_join(df_links_DARs,deg,by=c("gene","cluster"))
+```
+
+```{r}
+head(df_links_DARs_DEG)
+```
+```{r}
+names(df_links_DARs_DEG)[c(11,12,13,14,15,19,20,21,22,23)]
+```
+
+we need to change these column names: x = dars and y=deg
+
+```{r}
+#
+names(df_links_DARs_DEG)[c(11,12,13,14,15,19,20,21,22,23)]<-c("p_val.dars","avg_log2FC.dars","pct.1.dars" ,"pct.2.dars" ,"p_val_adj.dars","p_val.deg", "avg_log2FC.deg","pct.1.deg" ,"pct.2.deg", "p_val_adj.deg")
+head(df_links_DARs_DEG)
+#write_csv(df_links_DARs_DEG,path_to_save_df_join_link_DARs_DEG)
+
+```
+
+
+```{r}
+kbl(head(df_links_DARs_DEG),caption = "Table of the filtered links by DARs and DEG") %>%
+  kable_paper("striped", full_width = F)
+```
+
+```{r}
+tonsil_bcell_links_DARs_DEG<-tonsil_bcell
+
+#Create the new link GRanges data into the new seurat object. 
+Links(tonsil_bcell_links_DARs_DEG)<-makeGRangesFromDataFrame(df_links_DARs_DEG,
+                                                   keep.extra.columns=FALSE,
+                                                   ignore.strand=FALSE,
+                                                   seqinfo=NULL,
+                                                   seqnames.field=c("seqnames", "seqname","chromosome", 
+                                                                    "chrom","chr","chromosome_name","seqid"),
+                                                   start.field="start",
+                                                   end.field=c("end", "stop"),
+                                                   strand.field="strand",
+                                                   starts.in.df.are.0based=FALSE)
+
+# Add the values of each link 
+values(Links(tonsil_bcell_links_DARs_DEG))<-DataFrame(score=df_links_DARs_DEG$score,
+                                            gene=df_links_DARs_DEG$gene,
+                                            cluster=df_links_DARs_DEG$cluster,
+                                            peak=df_links_DARs_DEG$peak,
+                                            zscore=df_links_DARs_DEG$zscore,
+                                            pvalue=df_links_DARs_DEG$pvalue,
+                                            p_val.dars=df_links_DARs_DEG$p_val.dars,
+                                            pct.1.dars=df_links_DARs_DEG$pct.1.dars,
+                                            pct.2.dars=df_links_DARs_DEG$pct.2.dars, 
+                                            avg_log2FC.dars=df_links_DARs_DEG$avg_log2FC.dars,
+                                            start.peak=df_links_DARs_DEG$start.peak,
+                                            end.peak=df_links_DARs_DEG$end.peak,
+                                            p_val.deg=df_links_DARs_DEG$p_val.deg, 
+                                            avg_log2FC.deg=df_links_DARs_DEG$avg_log2FC.deg, 
+                                            pct.1.deg=df_links_DARs_DEG$pct.1.deg, 
+                                            pct.2.deg=df_links_DARs_DEG$pct.2.deg, 
+                                            p_val_adj.deg=df_links_DARs_DEG$p_val_adj.deg)
+table(df_links_DARs_DEG$gene=="BCL6",df_links_DARs_DEG$cluster)
+
+```
+
+As we can see we were able to keep the links that are correlating each DEGs with the DARs. Since BCL6 is DEG in GCBC we are only keeping the links that correlated BCL6 within the DARs. The same happen with PRDM1 but in PC cluster.
+
+
+```{r}
+table(df_links_DARs_DEG$gene=="PRDM1",df_links_DARs_DEG$cluster)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+ranges.show <- StringToGRanges("chr3-187721377-187745725")
+
+
+cols_cluster <- c("#a6cee3", "#1f78b4","#b2df8a", "#fb9a99")
+idents.plot <- c("GCBC", "NBC", "MBC", "PC")
+```
+
+```{r message=FALSE, warning=FALSE}
+coverage_extend("BCL6",c(0,2000,10000,1e+7),tonsil_bcell_links_DARs_DEG)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+coverage_extend("PRDM1",c(0,2000,10000,1e+7),tonsil_bcell_links_DARs_DEG)
+
+```
+
+# Analysing Links filtering
+
+```{r}
+
+table(df_linkpeak$gene=="BCL6")
+table(df_links_DARs_DEG$gene=="BCL6")
+
+print(paste0("Initial number of links: ", nrow(df_linkpeak)))
+print(paste0("Number of links filtered by DARs: ", nrow(df_links_DARs)))
+
+print(paste0("Number of links filtered by DARs and DEG: ", nrow(df_links_DARs_DEG)))
+
+df_data_steps_links<-data.frame(Ini_peaks=nrow(df_linkpeak),peaks_DARs=nrow(df_links_DARs),peaks_DARs_DEA=nrow(df_links_DARs_DEG))
+
+```
+
+```{r echo=FALSE}
+kbl(df_data_steps_links,caption = "Table of total number of initial, filtered links peaks by DARs and DEA") %>%
+  kable_paper("striped", full_width = F) %>%
+  column_spec(3, color = "white",
+              background = "steelblue")%>%
+  
+  add_header_above(c(" ", "Filtered by" = 2))
+```
+
+
+```{r}
+table(df_linkpeak$gene=="BCL6")
+```
+
+
+```{r}
+table(df_links_DARs$gene=="BCL6",df_links_DARs$cluster)
+```
+
+
+```{r}
+table(df_links_DARs_DEG$gene=="BCL6",df_links_DARs_DEG$cluster)
+
+```
+
+```{r}
+table(df_linkpeak$gene=="PRDM1")
+
+```
+
+
+
+```{r}
+table(df_links_DARs$gene=="PRDM1",df_links_DARs$cluster)
+
+```
+
+```{r}
+table(df_links_DARs_DEG$gene=="PRDM1",df_links_DARs_DEG$cluster)
+
+```
+
+
+# Save
+
+```{r eval=FALSE, include=FALSE}
+saveRDS(tonsil_bcell_links_DARs_DEG, paste0(path_to_objects, "5.tonsil_bcell_links_filt_dars_deg.rds"))
+```
+
+<details>
+  <summary>**Session Info**</summary>
+  
+```{r}
+sessionInfo()
+```
+
+
+</details>
